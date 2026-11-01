@@ -12,7 +12,7 @@ Build a wheel containing source and declare a `module:function` entrypoint in th
 --request /path/to/request.json --output /path/to/output.json
 ```
 
-The request has schema `claims_competition_request_v1`. It contains paper metadata, a read-only local `pdf_path`, and inference settings: the default model, allowed models, streaming preference, and maximum output tokens. The entrypoint must write one JSON `agent_v1` artifact for that paper. It may make multiple allowed inference calls within the round's per-paper budget.
+The request has schema `claims_competition_request_v1`. It contains paper metadata, a read-only local `pdf_path`, and inference settings: the default model, allowed models, streaming preference, and maximum output tokens. `inference.budget` supplies the actual paper `token_limit` (input plus output across all calls), `dollar_limit_usd`, `remaining_tokens`, and `remaining_dollar_limit_usd`. The remaining amounts match the paper-scoped gateway key at attempt start; a retry receives only the unused allowance. Track usage during execution; these fields are not live counters. The entrypoint must write one JSON `agent_v1` artifact for that paper. It may make multiple allowed inference calls within this budget. The gateway enforces the allowance independently of the package.
 
 The worker sets `CLAIMS_INFERENCE_BASE_URL` to the gateway's OpenAI-compatible `/v1` endpoint and `CLAIMS_INFERENCE_TOKEN` to a short-lived, paper-scoped virtual key. Your code can read this key to call `/chat/completions`; it never receives the upstream OpenRouter key or gateway administration credential. Do not write the scoped key into your output or logs.
 

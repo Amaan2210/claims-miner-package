@@ -2,5 +2,16 @@
   "schema_version": "claims_competition_request_v1",
   "paper": {"paper_id": "example-001", "title": "Example paper"},
   "pdf_path": "paper.pdf",
-  "inference": {"model": "example/allowed-model", "stream": true, "max_output_tokens": 8192}
+  "inference": {
+    "model": "example/allowed-model",
+    "allowed_models": ["example/allowed-model"],
+    "stream": true,
+    "max_output_tokens": 8192,
+    "budget": {
+      "token_limit": 100000,
+      "dollar_limit_usd": 0.10,
+      "remaining_tokens": 100000,
+      "remaining_dollar_limit_usd": 0.10
+    }
+  }
 }

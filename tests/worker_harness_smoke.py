@@ -71,7 +71,7 @@ def main() -> None:
             }
             contract = build_worker_contract(
                 job, allowed_models=("example/allowed-model",),
-                max_output_tokens=8192,
+                max_output_tokens=8192, paper_token_limit=1000, dollar_limit_usd=0.10,
             )
             bundle = build_worker_bundle(
                 job={**job, "worker_contract": contract,
