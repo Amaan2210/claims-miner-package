@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from claims_sample_miner.artifact_models import Artifact
 from claims_sample_miner.artifact_validator import validate_agent_artifact
+from claims_sample_miner.cli import InferenceError
 from test_package import PAPER_TEXT, write_pdf
 
 
@@ -101,6 +102,21 @@ class ControlledPipelinesTests(unittest.TestCase):
         _, calls = self.run_responses("section_map", ["bad"] * 6,
                                       source=source, expect_failure=True)
         self.assertEqual(len(calls), 6)
+
+    def test_transient_upstream_failure_gets_one_bounded_retry(self):
+        artifact, calls = self.run_responses("full_document", [
+            InferenceError("inference gateway HTTP 400 (upstream 504)", retryable=True),
+            json.dumps({"claims": [{"statement": PAPER_TEXT, "span_id": "real", "quote": PAPER_TEXT}]}),
+        ])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(artifact.metadata["transient_inference_errors"], 1)
+
+    def test_bad_requests_are_not_retried_as_model_format_errors(self):
+        with self.assertRaisesRegex(InferenceError, "upstream 400"):
+            self.run_responses("full_document", [
+                InferenceError("inference gateway HTTP 400 (upstream 400)", retryable=False),
+                AssertionError("bad requests must not be retried"),
+            ])
 
     def test_empty_grounded_output_gets_one_repair_and_never_fabricates_evidence(self):
         for repair_succeeds in (True, False):

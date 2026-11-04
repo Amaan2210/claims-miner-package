@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from claims_sample_miner.artifact_models import (
@@ -11,7 +12,7 @@ from claims_sample_miner.artifact_models import (
 )
 from claims_sample_miner.artifact_validator import validate_agent_artifact
 from claims_sample_miner.cli import (
-    REQUEST_SCHEMA, _grounding_issues, _parse_json_object, completion, ingest_pdf,
+    REQUEST_SCHEMA, InferenceError, _grounding_issues, _parse_json_object, completion, ingest_pdf,
 )
 from claims_sample_miner.grounding import grounded_passage
 from .strategy import extract
@@ -48,10 +49,10 @@ def main():
     inference = request["inference"]
     if inference["model"] not in inference["allowed_models"]:
         raise ValueError("model is outside the request whitelist")
-    calls = invalid_responses = 0
+    calls = invalid_responses = transient_errors = 0
 
     def ask(instruction, data, *, response_key="claims"):
-        nonlocal calls, invalid_responses
+        nonlocal calls, invalid_responses, transient_errors
         messages = [
             {"role": "system", "content": INSTRUCTION + "\n" + RESPONSE_SCHEMAS[response_key] + "\n" + instruction},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False)},
@@ -60,11 +61,19 @@ def main():
             if calls >= 6:
                 break
             calls += 1
-            raw = completion(
-                model=inference["model"], stream=bool(inference.get("stream", True)),
-                max_tokens=min(8192, int(inference.get("max_output_tokens", 8192))),
-                messages=messages,
-            )
+            try:
+                raw = completion(
+                    model=inference["model"], stream=bool(inference.get("stream", True)),
+                    max_tokens=min(8192, int(inference.get("max_output_tokens", 8192))),
+                    messages=messages,
+                )
+            except InferenceError as exc:
+                if not exc.retryable or attempt or calls >= 6:
+                    raise
+                transient_errors += 1
+                print(f"Model call {calls}: {exc}; retrying once", file=sys.stderr)
+                time.sleep(1)
+                continue
             try:
                 parsed = _parse_json_object(raw)
                 if not isinstance(parsed.get(response_key), list):
@@ -138,6 +147,7 @@ def main():
         src=SrcLayer(environment=["claims-controlled-competition-pipeline"]),
         metadata={"pipeline_name": extract.__module__, "model_calls": calls,
                   "invalid_model_responses": invalid_responses,
+                  "transient_inference_errors": transient_errors,
                   "discarded_ungrounded_claims": rejected,
                   "output_schema": "agent_v1", "source_type": "pdf",
                   "source_integrity": source["source_integrity"]},

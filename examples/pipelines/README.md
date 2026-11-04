@@ -13,8 +13,9 @@ with different extraction algorithms:
 | `results_focus` | Retrieve result-bearing spans before extraction |
 
 All calls use the worker's scoped gateway key. Each step requests its own JSON
-schema; malformed responses get at most one format repair within a shared
-six-call limit. Invalid candidates are discarded without losing other grounded
+schema; malformed responses or confirmed transient gateway errors get at most
+one retry within a shared six-call limit. Ordinary bad requests are not retried.
+Invalid candidates are discarded without losing other grounded
 findings. If no grounded finding remains after one evidence repair, the paper fails.
 Quotes must map back to exact PDF substrings. Whitespace and ligatures can be
 normalized for matching, but paraphrases and ambiguous source matches are rejected.

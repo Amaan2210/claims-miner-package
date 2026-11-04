@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import subprocess
 import sys
@@ -8,11 +9,12 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from claims_sample_miner.cli import ingest_pdf, run
+from claims_sample_miner.cli import InferenceError, completion, ingest_pdf, run
 from claims_sample_miner.smoke_baseline import run as run_smoke_baseline
 
 PAPER_TEXT = "The treatment group had a higher response rate than the control group."
@@ -94,6 +96,23 @@ def fake_urlopen(request, timeout):
 
 
 class PackageTests(unittest.TestCase):
+    def test_wrapped_upstream_errors_are_classified_without_logging_response_content(self):
+        for upstream, expected_retryable in [(504, True), (429, True), (400, False), (401, False)]:
+            with self.subTest(upstream=upstream), patch.dict(os.environ, {
+                "CLAIMS_INFERENCE_BASE_URL": "https://gateway.example/v1",
+                "CLAIMS_INFERENCE_TOKEN": "private-paper-key",
+            }):
+                error = HTTPError("https://gateway.example/v1/chat/completions", 400, "Bad Request", {},
+                    io.BytesIO(json.dumps({"error": {"code": str(upstream),
+                              "message": "sensitive request private-paper-key"}}).encode()))
+                with patch("claims_sample_miner.cli.urlopen", side_effect=error):
+                    with self.assertRaises(InferenceError) as raised:
+                        completion(model="qwen/qwen3-32b", messages=[], stream=True, max_tokens=8192)
+                self.assertEqual(raised.exception.retryable, expected_retryable)
+                self.assertIn(f"upstream {upstream}", str(raised.exception))
+                self.assertNotIn("sensitive", str(raised.exception))
+                self.assertNotIn("private-paper-key", str(raised.exception))
+
     def test_testnet_smoke_baseline_emits_one_exact_pdf_claim_without_inference(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

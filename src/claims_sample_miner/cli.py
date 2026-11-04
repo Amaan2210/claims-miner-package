@@ -11,6 +11,7 @@ import sys
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from pypdf import PdfReader
@@ -20,6 +21,24 @@ from .artifact_validator import validate_agent_artifact
 
 REQUEST_SCHEMA = "claims_competition_request_v1"
 MAX_SOURCE_CHARS = 60_000  # Canonical agent_v1 extraction budget.
+
+
+class InferenceError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def _inference_error(status: int, payload: Any) -> InferenceError:
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    try:
+        upstream = int(error.get("code", status)) if isinstance(error, dict) else status
+    except (ValueError, TypeError):
+        upstream = status
+    transient = {408, 429, 500, 502, 503, 504}
+    # Report codes only: provider messages can contain request content or keys.
+    return InferenceError(f"inference gateway HTTP {status} (upstream {upstream})",
+                          retryable=status in transient or upstream in transient)
 
 
 def ingest_pdf(pdf_path: Path, paper: dict[str, Any]) -> dict[str, Any]:
@@ -93,7 +112,15 @@ def completion(*, model: str, messages: list[dict[str, str]], stream: bool, max_
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=1800) as response:
+    try:
+        response = urlopen(request, timeout=1800)
+    except HTTPError as exc:
+        try:
+            error = json.loads(exc.read(8192))
+        except (ValueError, UnicodeDecodeError):
+            error = {}
+        raise _inference_error(exc.code, error) from None
+    with response:
         if not stream:
             return str(json.load(response)["choices"][0]["message"]["content"]).strip()
         chunks: list[str] = []
@@ -106,7 +133,7 @@ def completion(*, model: str, messages: list[dict[str, str]], stream: bool, max_
                 break
             event = json.loads(data)
             if "error" in event:
-                raise RuntimeError("inference gateway returned a streaming error")
+                raise _inference_error(0, event)
             for choice in event.get("choices", []):
                 chunks.append(str(choice.get("delta", {}).get("content") or ""))
         return "".join(chunks).strip()
