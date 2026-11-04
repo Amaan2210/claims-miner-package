@@ -6,10 +6,13 @@ def extract(source, ask):
     evidence = ask(
         'First identify original result passages. Return {"passages": [{"span_id": "...", "quote": "..."}]}; do not yet write claims.',
         source,
+        response_key="passages",
     )["passages"]
     spans = {row["span_id"]: row for row in source["spans"]}
     checked = []
     for row in evidence:
+        if not isinstance(row, dict):
+            continue
         passage = grounded_passage(source["spans"], row.get("span_id"), row.get("quote"))
         if passage is not None:
             checked.append({**passage, "context": spans[passage["span_id"]]["text"]})

@@ -25,6 +25,83 @@ def load(name, path):
 
 
 class ControlledPipelinesTests(unittest.TestCase):
+    def run_responses(self, strategy, replies, *, source=None, expect_failure=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_pdf(root / "paper.pdf")
+            request = root / "request.json"
+            request.write_text(json.dumps({
+                "schema_version": "claims_competition_request_v1",
+                "paper": {"paper_id": "example-001", "title": "Example paper"},
+                "pdf_path": "paper.pdf",
+                "inference": {"model": "allowed/model", "allowed_models": ["allowed/model"]},
+            }))
+            namespace = "response_test_" + strategy
+            package = types.ModuleType(namespace)
+            package.__path__ = []
+            sys.modules[namespace] = package
+            load(namespace + ".strategy", ROOT / f"examples/pipelines/{strategy}.py")
+            runner = load(namespace + ".runner", ROOT / "examples/pipelines/runner.py")
+            output = root / "output.json"
+            if source is None:
+                source = {"spans": [{"span_id": "real", "text": PAPER_TEXT}], "source_integrity": {}}
+            source = {**source, "paper": {"paper_id": "example-001", "title": "Example paper"}}
+            with patch.object(runner, "ingest_pdf", return_value=source), \
+                 patch.object(runner, "completion", side_effect=replies) as completion, \
+                 patch.object(sys, "argv", ["pipeline", "--request", str(request), "--output", str(output)]):
+                if expect_failure:
+                    with self.assertRaisesRegex(ValueError, "no grounded findings"):
+                        runner.main()
+                    self.assertFalse(output.exists())
+                    return None, completion.call_args_list
+                runner.main()
+            artifact = Artifact.model_validate_json(output.read_text())
+            self.assertEqual(validate_agent_artifact(artifact), [])
+            return artifact, completion.call_args_list
+
+    def test_evidence_schema_conflict_is_removed_and_missing_passages_gets_repaired(self):
+        artifact, calls = self.run_responses("evidence_first", [
+            json.dumps({"claims": []}),
+            json.dumps({"passages": [None, {"span_id": "real", "quote": []},
+                                      {"span_id": "real", "quote": PAPER_TEXT}]}),
+            json.dumps({"claims": [{"statement": PAPER_TEXT, "span_id": "real", "quote": PAPER_TEXT}]}),
+        ])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(artifact.metadata["invalid_model_responses"], 1)
+        first_prompt = calls[0].kwargs["messages"][0]["content"]
+        self.assertIn('Return JSON {"passages":', first_prompt)
+        self.assertNotIn('Return JSON {"claims":', first_prompt)
+        self.assertIn('Return JSON {"claims":', calls[2].kwargs["messages"][0]["content"])
+
+    def test_malformed_json_is_repaired_and_invalid_rows_do_not_destroy_valid_findings(self):
+        artifact, calls = self.run_responses("section_map", ["not JSON", json.dumps({"claims": [
+            None,
+            {"statement": {"bad": "shape"}, "span_id": "real", "quote": PAPER_TEXT},
+            {"statement": "Invented", "span_id": "real", "quote": "Fabricated evidence"},
+            {"statement": PAPER_TEXT, "span_id": "real", "quote": PAPER_TEXT},
+        ]})])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(artifact.logic.claims), 1)
+        self.assertEqual(artifact.metadata["discarded_ungrounded_claims"], 3)
+        self.assertEqual(artifact.logic.claims[0].sources[0].quote, PAPER_TEXT)
+
+    def test_failed_section_response_does_not_discard_other_sections(self):
+        source = {"spans": [{"span_id": name, "text": PAPER_TEXT * 300}
+                            for name in ["first", "second"]], "source_integrity": {}}
+        artifact, calls = self.run_responses("section_map", ["bad", "bad", json.dumps({"claims": [
+            {"statement": PAPER_TEXT, "span_id": "second", "quote": PAPER_TEXT},
+        ]})], source=source)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(artifact.logic.claims[0].sources[0].span_ids, ["second"])
+        self.assertEqual(artifact.metadata["invalid_model_responses"], 2)
+
+    def test_response_repairs_share_the_six_call_limit_and_never_fabricate_fallbacks(self):
+        source = {"spans": [{"span_id": str(i), "text": PAPER_TEXT * 300} for i in range(4)],
+                  "source_integrity": {}}
+        _, calls = self.run_responses("section_map", ["bad"] * 6,
+                                      source=source, expect_failure=True)
+        self.assertEqual(len(calls), 6)
+
     def test_empty_grounded_output_gets_one_repair_and_never_fabricates_evidence(self):
         for repair_succeeds in (True, False):
             with self.subTest(repair_succeeds=repair_succeeds), tempfile.TemporaryDirectory() as directory:
@@ -103,8 +180,9 @@ class ControlledPipelinesTests(unittest.TestCase):
         module = load("controlled_evidence_rejection", ROOT / "examples/pipelines/evidence_first.py")
         calls = []
 
-        def ask(*args):
+        def ask(*args, **kwargs):
             calls.append(args)
+            self.assertEqual(kwargs, {"response_key": "passages"})
             return {"passages": [{"span_id": "real", "quote": "invented"}]}
 
         with self.assertRaisesRegex(ValueError, "no grounded passages"):

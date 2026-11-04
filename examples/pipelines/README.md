@@ -12,8 +12,12 @@ with different extraction algorithms:
 | `verify_findings` | Draft findings, then audit them against the full source |
 | `results_focus` | Retrieve result-bearing spans before extraction |
 
-All calls use the worker's scoped gateway key. Quotes must occur in their
-declared source spans; malformed or unsupported outputs fail validation.
+All calls use the worker's scoped gateway key. Each step requests its own JSON
+schema; malformed responses get at most one format repair within a shared
+six-call limit. Invalid candidates are discarded without losing other grounded
+findings. If no grounded finding remains after one evidence repair, the paper fails.
+Quotes must map back to exact PDF substrings. Whitespace and ligatures can be
+normalized for matching, but paraphrases and ambiguous source matches are rejected.
 No evaluation paper IDs, expected answers or private provider keys are bundled.
 
 Build using a private participant manifest with five entries containing
