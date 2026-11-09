@@ -95,6 +95,49 @@ def fake_urlopen(request, timeout):
     return FakeResponse()
 
 
+def serve_gateway(responses: list[tuple[int, dict]]):
+    """Serve scripted gateway replies in order; a 200 streams the payload as an artifact."""
+    observed: list[dict] = []
+
+    class Gateway(BaseHTTPRequestHandler):
+        def do_POST(self):
+            observed.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            status, payload = responses[min(len(observed), len(responses)) - 1]
+            if status == 200:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                event = {"choices": [{"delta": {"content": json.dumps(payload)}}]}
+                self.wfile.write(("data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n").encode())
+                return
+            encoded = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, observed
+
+
+def write_request(root: Path) -> Path:
+    write_pdf(root / "paper.pdf")
+    request = root / "request.json"
+    request.write_text(json.dumps({
+        "schema_version": "claims_competition_request_v1",
+        "paper": {"paper_id": "example-001", "title": "Example paper"},
+        "pdf_path": "paper.pdf",
+        "inference": {"model": "example/allowed-model", "stream": True},
+    }))
+    return request
+
+
 class PackageTests(unittest.TestCase):
     def test_wrapped_upstream_errors_are_classified_without_logging_response_content(self):
         for upstream, expected_retryable in [(504, True), (429, True), (400, False), (401, False)]:
@@ -265,6 +308,72 @@ class PackageTests(unittest.TestCase):
             PdfWriter().write(root / "paper.pdf")
             with self.assertRaises(ValueError):
                 ingest_pdf(root / "paper.pdf", {"paper_id": "blank"})
+
+    def test_one_confirmed_transient_gateway_error_is_retried(self):
+        server, thread, observed = serve_gateway([
+            (429, {"error": {"code": 429, "message": "rate limited"}}),
+            (200, valid_artifact()),
+        ])
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                request = write_request(root)
+                with patch.dict(os.environ, {
+                    "CLAIMS_INFERENCE_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                    "CLAIMS_INFERENCE_TOKEN": "paper-scoped-test-token",
+                }), patch("claims_sample_miner.cli.TRANSIENT_RETRY_DELAY_SECONDS", 0):
+                    run(request, root / "output.json")
+                artifact = json.loads((root / "output.json").read_text())
+            self.assertEqual(artifact["logic"]["claims"][0]["claim_id"], "C01")
+            self.assertEqual(len(observed), 2)
+            self.assertEqual(observed[0], observed[1])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_second_consecutive_transient_failure_fails_the_paper(self):
+        server, thread, observed = serve_gateway([
+            (503, {"error": {"code": 503, "message": "upstream unavailable"}}),
+        ])
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                request = write_request(root)
+                with patch.dict(os.environ, {
+                    "CLAIMS_INFERENCE_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                    "CLAIMS_INFERENCE_TOKEN": "paper-scoped-test-token",
+                }), patch("claims_sample_miner.cli.TRANSIENT_RETRY_DELAY_SECONDS", 0):
+                    with self.assertRaises(InferenceError) as raised:
+                        run(request, root / "output.json")
+                self.assertFalse((root / "output.json").exists())
+            self.assertTrue(raised.exception.retryable)
+            self.assertEqual(len(observed), 2)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_ordinary_bad_request_is_not_retried(self):
+        server, thread, observed = serve_gateway([
+            (400, {"error": {"code": 400, "message": "bad request"}}),
+        ])
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                request = write_request(root)
+                with patch.dict(os.environ, {
+                    "CLAIMS_INFERENCE_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                    "CLAIMS_INFERENCE_TOKEN": "paper-scoped-test-token",
+                }):
+                    with self.assertRaises(InferenceError) as raised:
+                        run(request, root / "output.json")
+            self.assertFalse(raised.exception.retryable)
+            self.assertEqual(len(observed), 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

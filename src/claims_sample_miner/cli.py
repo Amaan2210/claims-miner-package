@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import time
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from .artifact_validator import validate_agent_artifact
 
 REQUEST_SCHEMA = "claims_competition_request_v1"
 MAX_SOURCE_CHARS = 60_000  # Canonical agent_v1 extraction budget.
+TRANSIENT_RETRY_DELAY_SECONDS = 1.0
 
 
 class InferenceError(RuntimeError):
@@ -137,6 +139,18 @@ def completion(*, model: str, messages: list[dict[str, str]], stream: bool, max_
             for choice in event.get("choices", []):
                 chunks.append(str(choice.get("delta", {}).get("content") or ""))
         return "".join(chunks).strip()
+
+
+def _completion_with_one_retry(**kwargs: Any) -> str:
+    """Retry one confirmed transient gateway failure; ordinary bad requests fail at once."""
+    try:
+        return completion(**kwargs)
+    except InferenceError as exc:
+        if not exc.retryable:
+            raise
+        print(f"{exc}; retrying once", file=sys.stderr)
+        time.sleep(TRANSIENT_RETRY_DELAY_SECONDS)
+        return completion(**kwargs)
 
 
 def _parse_json_object(value: str) -> dict[str, Any]:
@@ -269,7 +283,7 @@ def run(request_path: Path, output_path: Path) -> None:
     ]
     artifact: Artifact | None = None
     for attempt in range(2):
-        result = completion(model=model, messages=messages, stream=stream, max_tokens=max_tokens)
+        result = _completion_with_one_retry(model=model, messages=messages, stream=stream, max_tokens=max_tokens)
         try:
             artifact = Artifact.model_validate(_parse_json_object(result))
             if artifact.paper.paper_id != paper["paper_id"]:

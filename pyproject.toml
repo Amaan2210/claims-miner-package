@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claims-sample-miner"
-version = "0.1.4"
+version = "0.1.5"
 description = "Sample installable pipeline for the Claims weekly competition"
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.10,<3", "pypdf>=5,<7", "fonttools>=4.55,<5"]

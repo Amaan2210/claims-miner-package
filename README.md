@@ -1,6 +1,6 @@
 # Claims sample miner package
 
-This repository is a complete Python extraction package for the [Claims weekly competition](https://github.com/DeSciClaims/Claims). It reads a supplied PDF, extracts stable source spans, calls a permitted model through the Claims inference gateway, and writes a source-grounded `agent_v1` artifact. It validates the artifact and retries once with validation feedback.
+This repository is a complete Python extraction package for the [Claims weekly competition](https://github.com/DeSciClaims/Claims). It reads a supplied PDF, extracts stable source spans, calls a permitted model through the Claims inference gateway, and writes a source-grounded `agent_v1` artifact. It validates the artifact and retries once with validation feedback. A confirmed transient gateway error (HTTP 408, 429 or 5xx) gets one retry per call; ordinary bad requests fail immediately.
 
 Use it as a working starting point for your own pipeline. Its [manifest](./examples/competition_manifest.json), [request](./examples/request.json), and [package entrypoint](./src/claims_sample_miner/cli.py) show the competition contract.
 
