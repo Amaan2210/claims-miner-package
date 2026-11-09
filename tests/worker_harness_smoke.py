@@ -100,7 +100,7 @@ def main() -> None:
             assert Gateway.requests[0]["path"] == "/v1/chat/completions"
             assert Gateway.requests[0]["authorization"] == "Bearer paper-scoped-test-token"
             assert Gateway.requests[0]["body"]["stream"] is True
-            assert Gateway.requests[0]["body"]["model"] == "example/allowed-model"
+            assert Gateway.requests[0]["body"]["model"] == "openrouter/example/allowed-model"
             logs = (result_dir / "worker.log").read_text()
             assert "[install] exit=0" in logs
             assert "[validate] agent_v1 output accepted" in logs
