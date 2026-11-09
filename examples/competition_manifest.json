@@ -1,7 +1,7 @@
 {
   "schema_version": "claims_competition_manifest_v1",
   "package_format": "wheel",
-  "package_filename": "claims_sample_miner-0.1.5-py3-none-any.whl",
+  "package_filename": "claims_sample_miner-0.1.4-py3-none-any.whl",
   "language": "python",
   "team_id": "example-team",
   "entrypoint": "claims_sample_miner.cli:main",
